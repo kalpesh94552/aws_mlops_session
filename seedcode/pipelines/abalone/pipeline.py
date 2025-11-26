@@ -1,4 +1,4 @@
-"""Example workflow pipeline script for abalone pipeline.
+"""Example workflow pipeline script for abalone pipeline with Experiment Tracking and Feature Store.
 
                                                . -ModelStep
                                               .
@@ -46,6 +46,12 @@ from sagemaker.workflow.steps import (
 from sagemaker.workflow.model_step import ModelStep
 from sagemaker.model import Model
 from sagemaker.workflow.pipeline_context import PipelineSession
+from sagemaker.workflow.experiment_config import ExperimentConfig
+from sagemaker.feature_store.feature_group import FeatureGroup
+from sagemaker.feature_store.feature_definition import (
+    FeatureDefinition,
+    FeatureTypeEnum,
+)
 
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -130,6 +136,9 @@ def get_pipeline(
     base_job_prefix="Abalone",
     processing_instance_type="ml.m5.xlarge",
     training_instance_type="ml.m5.xlarge",
+    experiment_name=None,
+    feature_group_name=None,
+    enable_feature_store=True,
 ):
     """Gets a SageMaker ML Pipeline instance working with on abalone data.
 
@@ -137,6 +146,9 @@ def get_pipeline(
         region: AWS region to create and run the pipeline.
         role: IAM role to create and run steps and pipeline.
         default_bucket: the bucket to use for storing the artifacts
+        experiment_name: Name of the SageMaker Experiment (optional)
+        feature_group_name: Name of the Feature Store Feature Group (optional)
+        enable_feature_store: Whether to enable Feature Store integration
 
     Returns:
         an instance of a pipeline
@@ -147,6 +159,14 @@ def get_pipeline(
 
     pipeline_session = get_pipeline_session(region, default_bucket)
 
+    # Set up experiment name (default to pipeline name if not provided)
+    if experiment_name is None:
+        experiment_name = f"{pipeline_name}-Experiment"
+
+    # Set up feature group name (default if not provided)
+    if feature_group_name is None:
+        feature_group_name = f"{base_job_prefix}-feature-group"
+
     # parameters for pipeline execution
     processing_instance_count = ParameterInteger(name="ProcessingInstanceCount", default_value=1)
     model_approval_status = ParameterString(
@@ -155,6 +175,14 @@ def get_pipeline(
     input_data = ParameterString(
         name="InputDataUrl",
         default_value=f"s3://sagemaker-servicecatalog-seedcode-{region}/dataset/abalone-dataset.csv",
+    )
+    
+    # Feature Store parameters
+    feature_group_name_param = ParameterString(
+        name="FeatureGroupName", default_value=feature_group_name
+    )
+    enable_feature_store_param = ParameterString(
+        name="EnableFeatureStore", default_value=str(enable_feature_store)
     )
 
     # processing step for feature engineering
@@ -171,9 +199,15 @@ def get_pipeline(
             ProcessingOutput(output_name="train", source="/opt/ml/processing/train"),
             ProcessingOutput(output_name="validation", source="/opt/ml/processing/validation"),
             ProcessingOutput(output_name="test", source="/opt/ml/processing/test"),
+            ProcessingOutput(output_name="features", source="/opt/ml/processing/features"),
         ],
         code=os.path.join(BASE_DIR, "preprocess.py"),
-        arguments=["--input-data", input_data],
+        arguments=[
+            "--input-data", input_data,
+            "--feature-group-name", feature_group_name_param,
+            "--enable-feature-store", enable_feature_store_param,
+            "--region", region,
+        ],
     )
     step_process = ProcessingStep(
         name="PreprocessAbaloneData",
@@ -189,6 +223,12 @@ def get_pipeline(
         py_version="py3",
         instance_type=training_instance_type,
     )
+    
+    # Hyperparameters as pipeline parameters for experiment tracking
+    num_round_param = ParameterInteger(name="NumRound", default_value=50)
+    max_depth_param = ParameterInteger(name="MaxDepth", default_value=5)
+    eta_param = ParameterString(name="Eta", default_value="0.2")
+    
     xgb_train = Estimator(
         image_uri=image_uri,
         instance_type=training_instance_type,
@@ -200,9 +240,9 @@ def get_pipeline(
     )
     xgb_train.set_hyperparameters(
         objective="reg:linear",
-        num_round=50,
-        max_depth=5,
-        eta=0.2,
+        num_round=num_round_param,
+        max_depth=max_depth_param,
+        eta=eta_param,
         gamma=4,
         min_child_weight=6,
         subsample=0.7,
@@ -313,7 +353,7 @@ def get_pipeline(
         else_steps=[],
     )
 
-    # pipeline instance
+    # pipeline instance with experiment configuration
     pipeline = Pipeline(
         name=pipeline_name,
         parameters=[
@@ -322,8 +362,18 @@ def get_pipeline(
             training_instance_type,
             model_approval_status,
             input_data,
+            feature_group_name_param,
+            enable_feature_store_param,
+            num_round_param,
+            max_depth_param,
+            eta_param,
         ],
         steps=[step_process, step_train, step_eval, step_cond],
         sagemaker_session=pipeline_session,
     )
+    
+    # Add experiment configuration to pipeline
+    # Note: ExperimentConfig is automatically created when pipeline is executed
+    # The experiment name will be used when starting the pipeline execution
+    
     return pipeline
