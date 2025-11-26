@@ -46,12 +46,6 @@ from sagemaker.workflow.steps import (
 from sagemaker.workflow.model_step import ModelStep
 from sagemaker.model import Model
 from sagemaker.workflow.pipeline_context import PipelineSession
-from sagemaker.workflow.experiment_config import ExperimentConfig
-from sagemaker.feature_store.feature_group import FeatureGroup
-from sagemaker.feature_store.feature_definition import (
-    FeatureDefinition,
-    FeatureTypeEnum,
-)
 
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -372,8 +366,7 @@ def get_pipeline(
         sagemaker_session=pipeline_session,
     )
     
-    # Add experiment configuration to pipeline
-    # Note: ExperimentConfig is automatically created when pipeline is executed
-    # The experiment name will be used when starting the pipeline execution
+    # Note: Experiment configuration is passed as a dictionary when calling pipeline.start()
+    # Example: pipeline.start(experiment_config={"ExperimentName": "my-experiment", "TrialName": "my-trial"})
     
     return pipeline
